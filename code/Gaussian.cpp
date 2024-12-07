@@ -132,7 +132,7 @@ void write_png(const char* filename, png_bytep image, const unsigned height, con
 }
 
 void Gaussian(unsigned char* s, unsigned char* t, unsigned height, unsigned width, unsigned channels) {
-    int x, y, v, u;
+    int x, y, v, u, padded_y, padded_x;
     double R, G, B;
     double val[3] = {0.0};
     int adjustX, adjustY, xBound, yBound;
@@ -149,14 +149,21 @@ void Gaussian(unsigned char* s, unsigned char* t, unsigned height, unsigned widt
 
             for (v = -yBound; v < yBound + adjustY; ++v) {
                 for (u = -xBound; u < xBound + adjustX; ++u) {
-                    if ((x + u) >= 0 && (x + u) < width && y + v >= 0 && y + v < height) {
-                        R = s[channels * (width * (y + v) + (x + u)) + 2];
-                        G = s[channels * (width * (y + v) + (x + u)) + 1];
-                        B = s[channels * (width * (y + v) + (x + u)) + 0];
-                        val[2] += R * kernel[u + xBound][v + yBound];
-                        val[1] += G * kernel[u + xBound][v + yBound];
-                        val[0] += B * kernel[u + xBound][v + yBound];
-                    }
+                    if ((x + u) < 0) padded_x = -(x + u + 1);
+                    else if ((x + u) >= width) padded_x = width - (x + u - width + 1);
+                    else padded_x = x + u;
+
+                    if (y + v < 0) padded_y = -(y + v + 1);
+                    else if (y + v >= height) padded_y = height - (y + v - height + 1);
+                    else padded_y = y + v;
+
+
+                    R = s[channels * (width * (y + v) + (x + u)) + 2];
+                    G = s[channels * (width * (y + v) + (x + u)) + 1];
+                    B = s[channels * (width * (y + v) + (x + u)) + 0];
+                    val[2] += R * kernel[u + xBound][v + yBound];
+                    val[1] += G * kernel[u + xBound][v + yBound];
+                    val[0] += B * kernel[u + xBound][v + yBound];
                 }
             }
             t[channels * (width * y + x) + 2] = (val[2] > 255.0) ? 255 : val[2];
