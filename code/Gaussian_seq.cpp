@@ -3,13 +3,28 @@
 #include <cassert>
 #include <cmath>
 #include <png.h>
+#include <sstream>  // For stringstream
+#include <chrono>   // For timing
 
 using namespace std;
+using namespace chrono;
 
 // 定義 Array, Matrix, 和 Image 的型態，方便處理圖像數據
 typedef vector<double> Array;        // 用一維數組表示每個像素通道（紅、綠、藍）
 typedef vector<Array> Matrix;        // 用二維數組表示一個通道的圖像（例如，紅色通道）
 typedef vector<Matrix> Image;        // 用三維數組表示完整的圖像，包含紅、綠、藍三個通道
+
+const int width = 50;
+const int height = 50;
+
+// Function to generate a filename based on image size (width and height)
+string generateFilename(int width, int height)
+{
+    // Use stringstream to construct a string with width and height as part of the filename
+    stringstream filename;
+    filename << "output_" << width << "x" << height << ".png";
+    return filename.str();  // Convert the stringstream to a string and return
+}
 
 // 計算高斯濾波器（卷積核）
 Matrix getGaussian(int height, int width, double sigma)
@@ -143,34 +158,46 @@ void saveImage(Image &image, const char *filename)
 // 應用濾波器（卷積）對圖像進行處理
 Image applyFilter(Image &image, Matrix &filter)
 {
-    assert(image.size() == 3 && filter.size() != 0);  // 確保圖像和濾波器有效
+    assert(image.size() == 3 && filter.size() != 0);  // Ensure the image and filter are valid
 
-    int height = image[0].size();  // 圖像高度
-    int width = image[0][0].size();  // 圖像寬度
-    int filterHeight = filter.size();  // 濾波器高度
-    int filterWidth = filter[0].size();  // 濾波器寬度
-    int newImageHeight = height - filterHeight + 1;  // 濾波後圖像的高度
-    int newImageWidth = width - filterWidth + 1;    // 濾波後圖像的寬度
-    int d, i, j, h, w;
+    int height = image[0].size();  // Image height
+    int width = image[0][0].size();  // Image width
+    int filterHeight = filter.size();  // Filter height
+    int filterWidth = filter[0].size();  // Filter width
+    int padHeight = filterHeight / 2;  // Padding size for height
+    int padWidth = filterWidth / 2;    // Padding size for width
 
-    // 創建一個新的圖像（空的）
-    Image newImage(3, Matrix(newImageHeight, Array(newImageWidth)));
+    // Create a new image with reflection padding
+    Image paddedImage(3, Matrix(height + 2 * padHeight, Array(width + 2 * padWidth)));
 
-    // 對每個顏色通道進行濾波操作
-    for (d = 0; d < 3; d++) {
-        for (i = 0; i < newImageHeight; i++) {
-            for (j = 0; j < newImageWidth; j++) {
-                for (h = i; h < i + filterHeight; h++) {
-                    for (w = j; w < j + filterWidth; w++) {
-                        // 將濾波器對應區域的像素與濾波器值相乘並累加
-                        newImage[d][i][j] += filter[h - i][w - j] * image[d][h][w];
+    // Apply reflection padding
+    for (int d = 0; d < 3; d++) {
+        for (int i = 0; i < height + 2 * padHeight; i++) {
+            for (int j = 0; j < width + 2 * padWidth; j++) {
+                int y = min(height - 1, max(0, i - padHeight));  // Reflect indices vertically
+                int x = min(width - 1, max(0, j - padWidth));    // Reflect indices horizontally
+                paddedImage[d][i][j] = image[d][y][x];
+            }
+        }
+    }
+
+    // Prepare the filtered image with the same size as the original
+    Image newImage(3, Matrix(height, Array(width)));
+
+    // Apply the filter to the padded image
+    for (int d = 0; d < 3; d++) {
+        for (int i = 0; i < height; i++) {
+            for (int j = 0; j < width; j++) {
+                for (int h = 0; h < filterHeight; h++) {
+                    for (int w = 0; w < filterWidth; w++) {
+                        newImage[d][i][j] += filter[h][w] * paddedImage[d][i + h][j + w];
                     }
                 }
             }
         }
     }
 
-    return newImage;  // 返回濾波後的新圖像
+    return newImage;  // Return the filtered image
 }
 
 // 重複應用濾波器多次
@@ -185,17 +212,37 @@ Image applyFilter(Image &image, Matrix &filter, int times)
 
 int main()
 {
+    cout << "Height = " << height << " Width = " << width << "\n";
+
+    // 開始計時
+    auto start = high_resolution_clock::now();
+
     // 從文件加載圖像
     Image image = loadImage("input.png");
 
     // 計算高斯濾波器
-    Matrix gaussian = getGaussian(5, 5, 1.0);
+    Matrix gaussian = getGaussian(height, width, 1.0);
 
     // 將濾波器應用於圖像
     Image filteredImage = applyFilter(image, gaussian, 3);
 
     // 保存結果圖像
-    saveImage(filteredImage, "output.png");
+    // Generate the filename based on image size
+    string filename = generateFilename(width, height);
+
+    // Save the result with the generated filename
+    saveImage(filteredImage, filename.c_str());
+
+
+    // 計時結束
+    auto end = high_resolution_clock::now();
+    auto duration = duration_cast<milliseconds>(end - start);  // 計算執行時間
+
+    // 輸出結果
+    int seconds = duration.count() / 1000;  // 毫秒轉換成秒
+    int milliseconds = duration.count() % 1000;  // 剩餘毫秒
+    cout << "Execution time: " << seconds << " s " << milliseconds << " ms" << endl;
+
 
     return 0;
 }
