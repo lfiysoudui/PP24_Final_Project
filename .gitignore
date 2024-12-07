@@ -1,1 +1,5 @@
 test*
+Gaussian_seq
+Gaussian_cuda
+Gaussian_hip
+Gaussian
