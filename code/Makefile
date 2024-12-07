@@ -9,13 +9,13 @@ CUDA_TARGET := Gaussian_cuda
 HIP_TARGET := Gaussian_hip
 
 seq: Gaussian_seq.cpp
-	$(CXX) $(CXXFLAGS) $(LOCALFLAGS) $(LDFLAGS) -o $(TARGET) Gaussian_seq.cpp
+	$(CXX) $(CXXFLAGS) $(LOCALFLAGS) $(LDFLAGS) -o $(SEQ_TARGET) Gaussian_seq.cpp
 
 amd: Gaussian.cpp
-	hipcc $(HIPFLAGS) $(LDFLAGS) -o $(SEQUENTIAL) Gaussian.cpp
+	hipcc $(HIPFLAGS) $(LDFLAGS) -o $(HIP_TARGET) Gaussian.cpp
 
 cuda: Gaussian.cu
-	nvcc $(NVFLAGS) $(LDFLAGS) -o $(TARGET) Gaussian.cu
+	nvcc $(NVFLAGS) $(LDFLAGS) -o $(CUDA_TARGET) Gaussian.cu
 
 clean:
 	rm -f $(SEQ_TARGET) $(CUDA_TARGET) $(HIP_TARGET)
