@@ -7,28 +7,26 @@
 #include <iostream>
 #include <sstream>  // For stringstream
 #include <chrono>   // For timing
-#include <cuda_runtime.h>
+#include "cuda/cuda_runtime.h"
 
-#define MASK_X 10   //mask size
-#define ITER_T 3    //iteration time
+#define MASK_X 20   //mask size
 #define MASK_Y MASK_X
-double** kernel;
-__constant__ double d_kernel[MASK_X][MASK_Y]; // 使用 constant memory 儲存 kernel
+#define BLK_SIZE 64
+// #define DEBUG
+double kernel[MASK_X][MASK_Y];
+__device__ __constant__ double d_kernel[MASK_X][MASK_Y];
 
 // Function to generate a filename based on image size (width and height)
 std::string generateFilename(char* inputname)
 {
     // Use stringstream to construct a string with width and height as part of the filename
     std::stringstream filename;
-    filename << inputname << "_[" << MASK_X << "x" << MASK_Y << "].png";
+    filename << inputname << "_[" << MASK_X << "x" << MASK_Y << "]_out.png";
     return filename.str();  // Convert the stringstream to a string and return
 }
 
 void set_filter(double sigma)
 {
-    kernel = (double**)malloc(sizeof(double*) * MASK_Y);
-    for(int i = 0; i < MASK_Y; i++) kernel[i] = (double*)malloc(sizeof(double) * MASK_X);
-
     double sum = 0.0; // to normalize
     double r, s = 2.0 * sigma * sigma; 
     int i,j;
@@ -42,14 +40,13 @@ void set_filter(double sigma)
         } 
     } 
 
-
     double sum_ = 0.0;
     for (i = 0; i < MASK_Y; i++) {
         for (j = 0; j < MASK_X; j++) {
             kernel[i][j] /= sum;
         }
     }
-    #ifdef debug
+    #ifdef DEBUG
     std::cout << "[Filter]" << std::endl;
     for (i = 0; i < MASK_Y; i++) {
         std::cout << "[";
@@ -63,8 +60,8 @@ void set_filter(double sigma)
     return;
 }
 
-int read_png(const char* filename, unsigned char** image, unsigned* height, unsigned* width,
-    unsigned* channels) {
+
+int read_png(const char* filename, unsigned char** image, unsigned* height, unsigned* width, unsigned* channels, unsigned* imgsize) {
     unsigned char sig[8];
     FILE* infile;
     infile = fopen(filename, "rb");
@@ -95,7 +92,7 @@ int read_png(const char* filename, unsigned char** image, unsigned* height, unsi
     png_read_update_info(png_ptr, info_ptr);
     rowbytes = png_get_rowbytes(png_ptr, info_ptr);
     *channels = (int)png_get_channels(png_ptr, info_ptr);
-
+    *imgsize = rowbytes * *height;
     if ((*image = (unsigned char*)malloc(rowbytes * *height)) == NULL) {
         png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
         return 3;
@@ -133,77 +130,102 @@ void write_png(const char* filename, png_bytep image, const unsigned height, con
     fclose(fp);
 }
 
-__global__ void GaussianKernel(unsigned char* d_s, unsigned char* d_t, unsigned height, unsigned width, unsigned channels) {
+__global__ void Gaussian(unsigned char* d_s, unsigned char* d_tg, unsigned height, unsigned width, unsigned channels) {
+    __shared__ unsigned char sharedMem[BLK_SIZE + MASK_Y][BLK_SIZE + MASK_X][3];
+    
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x >= width || y >= height) return; // 確保不處理無效像素
+    int xBound  = MASK_X / 2;
+    int yBound  = MASK_Y / 2;
 
-    int adjustX = (MASK_X % 2) ? 1 : 0;
-    int adjustY = (MASK_Y % 2) ? 1 : 0;
-    int xBound = MASK_X / 2;
-    int yBound = MASK_Y / 2;
+    // Load pixels to shared memory
+    int x_start = (threadIdx.x == 0)? -xBound : 0;
+    int x_end   = (threadIdx.x == blockDim.x - 1)? xBound + ((MASK_X % 2) ? 1 : 0) : 1;
+    int y_start = (threadIdx.y == 0)? -yBound : 0;
+    int y_end   = (threadIdx.y == blockDim.y - 1)? yBound + ((MASK_Y % 2) ? 1 : 0) : 1;
 
-    double val[3] = {0.0};
+    int padded_y, padded_x;
+    for(int v = y_start; v < y_end; ++v){
+        for(int u = x_start; u < x_end; ++u){
+            // padding x
+            if ((x + u) < 0) padded_x = -(x + u + 1);
+            else if ((x + u) >= width) padded_x = width - (x + u - width + 1);
+            else padded_x = x + u;
+            // padding y
+            if (y + v < 0) padded_y = -(y + v + 1);
+            else if (y + v >= height) padded_y = height - (y + v - height + 1);
+            else padded_y = y + v;
 
-    for (int v = -yBound; v < yBound + adjustY; ++v) {
-        for (int u = -xBound; u < xBound + adjustX; ++u) {
-            int nx = x + u;
-            int ny = y + v;
-
-            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-                unsigned char R = d_s[channels * (width * ny + nx) + 2];
-                unsigned char G = d_s[channels * (width * ny + nx) + 1];
-                unsigned char B = d_s[channels * (width * ny + nx) + 0];
-
-                val[2] += R * d_kernel[u + xBound][v + yBound];
-                val[1] += G * d_kernel[u + xBound][v + yBound];
-                val[0] += B * d_kernel[u + xBound][v + yBound];
+            for (int c = 0; c < channels; c++) {
+                sharedMem[yBound + v + threadIdx.y][xBound + u + threadIdx.x][c]
+                    = d_s[channels * (width * padded_y + padded_x) + c];
             }
         }
     }
+    __syncthreads();
 
-    d_t[channels * (width * y + x) + 2] = (val[2] > 255.0) ? 255 : val[2];
-    d_t[channels * (width * y + x) + 1] = (val[1] > 255.0) ? 255 : val[1];
-    d_t[channels * (width * y + x) + 0] = (val[0] > 255.0) ? 255 : val[0];
-}
-
-void GaussianCUDA(unsigned char* h_s, unsigned char* h_t, unsigned height, unsigned width, unsigned channels) {
-    unsigned char *d_s, *d_t;
-    size_t imageSize = height * width * channels * sizeof(unsigned char);
-
-    cudaMalloc(&d_s, imageSize);
-    cudaMalloc(&d_t, imageSize);
-    cudaMemcpy(d_s, h_s, imageSize, cudaMemcpyHostToDevice);
-    cudaMemcpyToSymbol(d_kernel, kernel, MASK_X * MASK_Y * sizeof(double));
-
-    dim3 blockSize(MASK_X, MASK_Y); // 直接把 block size 設成跟 filter 的 size 一樣，配合複製到 device 上的 mem
-    dim3 gridSize((width + blockSize.x - 1) / blockSize.x, (height + blockSize.y - 1) / blockSize.y);
-
-
-    GaussianKernel<<<gridSize, blockSize>>>(d_s, d_t, height, width, channels);
-
-    cudaMemcpy(h_t, d_t, imageSize, cudaMemcpyDeviceToHost);
-    cudaFree(d_s);
-    cudaFree(d_t);
+    if(x < width && y < height) {
+        double R, G, B;
+        double val[3] = {0.0};
+        #pragma unroll
+        for (int v = 0; v < MASK_Y; ++v) {
+            #pragma unroll
+            for (int u = 0; u < MASK_X; ++u) {
+                R = sharedMem[threadIdx.y + v][threadIdx.x + u][2];
+                G = sharedMem[threadIdx.y + v][threadIdx.x + u][1];
+                B = sharedMem[threadIdx.y + v][threadIdx.x + u][0];
+                val[2] += R * d_kernel[u][v];
+                val[1] += G * d_kernel[u][v];
+                val[0] += B * d_kernel[u][v];
+            }
+        }
+        d_tg[channels * (width * y + x) + 2] = (val[2] > 255.0) ? 255 : val[2];
+        d_tg[channels * (width * y + x) + 1] = (val[1] > 255.0) ? 255 : val[1];
+        d_tg[channels * (width * y + x) + 0] = (val[0] > 255.0) ? 255 : val[0];
+    }
 }
 
 int main(int argc, char** argv) {
-    assert((argc < 2, "[Usage] ./Gaussian input.png [optional output.png]"));
+    if(!(argc > 1 && argc < 4)){
+        std::cerr << "[Usage] ./Gaussian input.png [optional output.png]" << std::endl;
+        return 1;
+    }
+    
 
-    unsigned height, width, channels;
-    unsigned char* src_img = NULL;
+    unsigned height, width, channels, imgsize;
+    unsigned char* src_img,  *d_src_img, *d_intermediate_img, *d_dst_img;;
 
-    read_png(argv[1], &src_img, &height, &width, &channels);
-    assert(channels == 3);
-
-    unsigned char* dst_img =
-        (unsigned char*)malloc(height * width * channels * sizeof(unsigned char));
+    read_png(argv[1], &src_img, &height, &width, &channels, &imgsize);
+    std::cout << "channel : " << channels << std::endl;
+    if(channels != 3){
+        std::cerr << "[Usage] please use convert.py to make it 3-channel" << std::endl;
+        return 1;
+    }
+    cudaMalloc((void**)&d_src_img, imgsize);
+    cudaMemcpy(d_src_img, src_img, imgsize, cudaMemcpyHostToDevice);
 
     // Start the timer
     auto start = std::chrono::high_resolution_clock::now();
+    // Generate the filter in gpu
     set_filter(1.0);
-    GaussianCUDA(src_img, dst_img, height, width, channels);
+    cudaMemcpyToSymbol(d_kernel, &kernel, MASK_X * MASK_Y * sizeof(double));
+
+    cudaMalloc((void**)&d_intermediate_img, imgsize);
+    cudaMalloc((void**)&d_dst_img, imgsize);
+
+    // Define block size
+    dim3 blockSize = (BLK_SIZE,BLK_SIZE); // Set block size (experiment for optimal performance)
+    dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
+                (height + blockSize.y - 1) / blockSize.y);
+
+    // Apply Gaussian filter two times
+    cudaLaunchKernelGGL(Gaussian, gridSize, blockSize, 0, 0, d_src_img, d_intermediate_img, height, width, channels);
+    cudaLaunchKernelGGL(Gaussian, gridSize, blockSize, 0, 0, d_intermediate_img, d_dst_img, height, width, channels);
+
+    //copy back the result image
+    unsigned char *dst_img = (unsigned char *)malloc(imgsize);
+    cudaMemcpy(dst_img, d_dst_img, imgsize, cudaMemcpyDeviceToHost);
 
     // End the timer
     auto end = std::chrono::high_resolution_clock::now();
@@ -211,13 +233,15 @@ int main(int argc, char** argv) {
     int seconds = duration.count() / 1000;
     int milliseconds = duration.count() % 1000;
     std::cout << "Execution time: " << seconds << " s " << milliseconds << " ms" << std::endl;
-    if(argc == 3)
+
+    if (argc == 3)
         write_png(argv[2], dst_img, height, width, channels);
     else
         write_png(generateFilename(argv[1]).c_str(), dst_img, height, width, channels);
 
-    free(src_img);
-    free(dst_img);
+    cudaFree(d_src_img);
+    cudaFree(d_intermediate_img);
+    cudaFree(d_dst_img);
 
     return 0;
 }
