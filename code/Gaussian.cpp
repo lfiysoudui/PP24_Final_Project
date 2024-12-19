@@ -18,7 +18,7 @@ std::string generateFilename(char* inputname)
 {
     // Use stringstream to construct a string with width and height as part of the filename
     std::stringstream filename;
-    filename << inputname << "_[" << MASK_X << "x" << MASK_Y << "].png";
+    filename << inputname << "_[" << MASK_X << "x" << MASK_Y << "]_out.png";
     return filename.str();  // Convert the stringstream to a string and return
 }
 
@@ -182,13 +182,18 @@ int main(int argc, char** argv) {
     read_png(argv[1], &src_img, &height, &width, &channels);
     assert(channels == 3);
 
+    unsigned char* intermediate_img =
+        (unsigned char*)malloc(height * width * channels * sizeof(unsigned char));
     unsigned char* dst_img =
         (unsigned char*)malloc(height * width * channels * sizeof(unsigned char));
 
     // Start the timer
     auto start = std::chrono::high_resolution_clock::now();
     set_filter(1.0);
-    Gaussian(src_img, dst_img, height, width, channels);
+
+    // Apply Gaussian filter two times
+    Gaussian(src_img, intermediate_img, height, width, channels);
+    Gaussian(intermediate_img, dst_img, height, width, channels);
 
     // End the timer
     auto end = std::chrono::high_resolution_clock::now();
@@ -196,13 +201,16 @@ int main(int argc, char** argv) {
     int seconds = duration.count() / 1000;
     int milliseconds = duration.count() % 1000;
     std::cout << "Execution time: " << seconds << " s " << milliseconds << " ms" << std::endl;
-    if(argc == 3)
+
+    if (argc == 3)
         write_png(argv[2], dst_img, height, width, channels);
     else
         write_png(generateFilename(argv[1]).c_str(), dst_img, height, width, channels);
 
     free(src_img);
+    free(intermediate_img);
     free(dst_img);
 
     return 0;
 }
+
