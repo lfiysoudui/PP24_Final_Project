@@ -11,8 +11,8 @@ HIP_TARGET := Gaussian_hip
 seq: Gaussian_seq.cpp
 	$(CXX) $(CXXFLAGS) $(LOCALFLAGS) $(LDFLAGS) -o $(SEQ_TARGET) Gaussian_seq.cpp
 
-amd: Gaussian.cpp
-	hipcc $(HIPFLAGS) $(LDFLAGS) -o $(HIP_TARGET) Gaussian.cpp
+amd: Gaussian_hip.cpp
+	hipcc $(HIPFLAGS) $(LDFLAGS) -o $(HIP_TARGET) Gaussian_hip.cpp
 
 cuda: Gaussian.cu
 	nvcc $(NVFLAGS) $(LDFLAGS) -o $(CUDA_TARGET) Gaussian.cu
