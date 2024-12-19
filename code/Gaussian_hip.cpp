@@ -7,11 +7,13 @@
 #include <iostream>
 #include <sstream>  // For stringstream
 #include <chrono>   // For timing
+#include "hip/hip_runtime.h"
 
-#define MASK_X 10   //mask size
-#define ITER_T 3    //iteration time
+#define MASK_X 20   //mask size
 #define MASK_Y MASK_X
-double** kernel;
+#define BLK_SIZE 64
+// double kernel[MASK_X][MASK_Y];
+__device__ __constant__ double d_kernel[MASK_X][MASK_Y];
 
 // Function to generate a filename based on image size (width and height)
 std::string generateFilename(char* inputname)
@@ -22,11 +24,11 @@ std::string generateFilename(char* inputname)
     return filename.str();  // Convert the stringstream to a string and return
 }
 
-void set_filter(double sigma)
+__global__ void set_filter(double sigma)
 {
-    kernel = (double**)malloc(sizeof(double*) * MASK_Y);
-    for(int i = 0; i < MASK_Y; i++) kernel[i] = (double*)malloc(sizeof(double) * MASK_X);
-
+    int x_coor = blockIdx.x * blockDim.x + threadIdx.x;
+    int y_coor = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x_coor >= MASK_X||x_coor >= MASK_Y) return;
     double sum = 0.0; // to normalize
     double r, s = 2.0 * sigma * sigma; 
     int i,j;
@@ -34,9 +36,9 @@ void set_filter(double sigma)
     // generating 5x5 kernel 
     for (i = -MASK_X/2; i < MASK_X/2 + MASK_X%2; i++) { 
         for (j = -MASK_Y/2; j < MASK_Y/2 + MASK_Y%2; j++) { 
-            r = sqrt(i * i + j * j); 
-            kernel[i + MASK_X/2][j + MASK_X/2] = (exp(-(r * r) / s)) / (M_PI * s); 
-            sum += kernel[i + MASK_X/2][j + MASK_X/2]; 
+            r = sqrt((double)(i * i + j * j)); 
+            d_kernel[i + MASK_X/2][j + MASK_X/2] = (exp(-(r * r) / s)) / (M_PI * s); 
+            sum += d_kernel[i + MASK_X/2][j + MASK_X/2]; 
         } 
     } 
 
@@ -44,7 +46,7 @@ void set_filter(double sigma)
     double sum_ = 0.0;
     for (i = 0; i < MASK_Y; i++) {
         for (j = 0; j < MASK_X; j++) {
-            kernel[i][j] /= sum;
+            d_kernel[i][j] /= sum;
         }
     }
     #ifdef debug
@@ -131,44 +133,64 @@ void write_png(const char* filename, png_bytep image, const unsigned height, con
     fclose(fp);
 }
 
-void Gaussian(unsigned char* s, unsigned char* t, unsigned height, unsigned width, unsigned channels) {
-    int x, y, v, u, padded_y, padded_x;
+__global__ void Gaussian(unsigned char* d_s, unsigned char* d_tg, unsigned height, unsigned width, unsigned channels) {
+    __shared__ unsigned char sharedMem[BLK_SIZE + MASK_Y][BLK_SIZE + MASK_X][3];
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int adjustX = (MASK_X % 2) ? 1 : 0;
+    int adjustY = (MASK_Y % 2) ? 1 : 0; 
+    int xBound  = MASK_X / 2;
+    int yBound  = MASK_Y / 2;
+
+    // Load pixels to shared memory
+    int x_start = (threadIdx.x == 0)?              -xBound          : 0;
+    int x_end   = (threadIdx.x == blockDim.x - 1)? xBound + adjustX : 1;
+    int y_start = (threadIdx.y == 0)?              -yBound          : 0;
+    int y_end   = (threadIdx.y == blockDim.y - 1)? yBound + adjustY : 1;
+
+    int padded_y, padded_x;
+    for(int v = y_start; v < y_end; ++v){
+        for(int u = x_start; u < x_end; ++u){
+            // padding x
+            if ((x + u) < 0) padded_x = -(x + u + 1);
+            else if ((x + u) >= width) padded_x = width - (x + u - width + 1);
+            else padded_x = x + u;
+            // padding y
+            if (y + v < 0) padded_y = -(y + v + 1);
+            else if (y + v >= height) padded_y = height - (y + v - height + 1);
+            else padded_y = y + v;
+
+            for (int c = 0; c < channels; c++) {
+                sharedMem[yBound + v + threadIdx.y][xBound + u + threadIdx.x][c]
+                    = d_s[channels * (width * padded_y + padded_x) + c];
+            }
+        }
+    }
+    __syncthreads();
+
     double R, G, B;
     double val[3] = {0.0};
-    int adjustX, adjustY, xBound, yBound;
     for (y = 0; y < height; ++y) {
         for (x = 0; x < width; ++x) {
-            adjustX = (MASK_X % 2) ? 1 : 0;
-            adjustY = (MASK_Y % 2) ? 1 : 0;
-            xBound = MASK_X / 2;
-            yBound = MASK_Y / 2;
 
             val[2] = 0.0;
             val[1] = 0.0;
             val[0] = 0.0;
 
-            for (v = -yBound; v < yBound + adjustY; ++v) {
-                for (u = -xBound; u < xBound + adjustX; ++u) {
-                    if ((x + u) < 0) padded_x = -(x + u + 1);
-                    else if ((x + u) >= width) padded_x = width - (x + u - width + 1);
-                    else padded_x = x + u;
-
-                    if (y + v < 0) padded_y = -(y + v + 1);
-                    else if (y + v >= height) padded_y = height - (y + v - height + 1);
-                    else padded_y = y + v;
-
-
-                    R = s[channels * (width * (y + v) + (x + u)) + 2];
-                    G = s[channels * (width * (y + v) + (x + u)) + 1];
-                    B = s[channels * (width * (y + v) + (x + u)) + 0];
-                    val[2] += R * kernel[u + xBound][v + yBound];
-                    val[1] += G * kernel[u + xBound][v + yBound];
-                    val[0] += B * kernel[u + xBound][v + yBound];
+            for (int v = -yBound; v < yBound + adjustY; ++v) {
+                for (int u = -xBound; u < xBound + adjustX; ++u) {
+                    R = d_s[channels * (width * (y + v) + (x + u)) + 2];
+                    G = d_s[channels * (width * (y + v) + (x + u)) + 1];
+                    B = d_s[channels * (width * (y + v) + (x + u)) + 0];
+                    val[2] += R * d_kernel[u + xBound][v + yBound];
+                    val[1] += G * d_kernel[u + xBound][v + yBound];
+                    val[0] += B * d_kernel[u + xBound][v + yBound];
                 }
             }
-            t[channels * (width * y + x) + 2] = (val[2] > 255.0) ? 255 : val[2];
-            t[channels * (width * y + x) + 1] = (val[1] > 255.0) ? 255 : val[1];
-            t[channels * (width * y + x) + 0] = (val[0] > 255.0) ? 255 : val[0];
+            d_tg[channels * (width * y + x) + 2] = (val[2] > 255.0) ? 255 : val[2];
+            d_tg[channels * (width * y + x) + 1] = (val[1] > 255.0) ? 255 : val[1];
+            d_tg[channels * (width * y + x) + 0] = (val[0] > 255.0) ? 255 : val[0];
         }
     }
 }
@@ -182,18 +204,27 @@ int main(int argc, char** argv) {
     read_png(argv[1], &src_img, &height, &width, &channels);
     assert(channels == 3);
 
-    unsigned char* intermediate_img =
-        (unsigned char*)malloc(height * width * channels * sizeof(unsigned char));
-    unsigned char* dst_img =
-        (unsigned char*)malloc(height * width * channels * sizeof(unsigned char));
+    unsigned char *d_src_img, *d_intermediate_img, *d_dst_img;
+    hipMalloc(&d_src_img, height * width * channels * sizeof(unsigned char));
+    hipMalloc(&d_intermediate_img, height * width * channels * sizeof(unsigned char));
+    hipMalloc(&d_dst_img, height * width * channels * sizeof(unsigned char));
+    hipMemcpyAsync(d_src_img, src_img, height * width * channels * sizeof(unsigned char), hipMemcpyHostToDevice);
+
 
     // Start the timer
     auto start = std::chrono::high_resolution_clock::now();
-    set_filter(1.0);
+    // Generate the filter in gpu
+    hipLaunchKernelGGL(set_filter,dim3(1,1,0) ,dim3(MASK_X, MASK_Y, 0), 0, 0 ,1.0);
+    // Define block size
+    dim3 blockSize = (BLK_SIZE, BLK_SIZE); // Set block size (experiment for optimal performance)
+    dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
+                (height + blockSize.y - 1) / blockSize.y);
 
     // Apply Gaussian filter two times
-    Gaussian(src_img, intermediate_img, height, width, channels);
-    Gaussian(intermediate_img, dst_img, height, width, channels);
+    hipLaunchKernelGGL(Gaussian, gridSize, blockSize, 0, 0, d_src_img, d_intermediate_img, height, width, channels);
+    hipLaunchKernelGGL(Gaussian, gridSize, blockSize, 0, 0, d_intermediate_img, d_dst_img, height, width, channels);
+    //copy back the result image
+    unsigned char *dst_img;
 
     // End the timer
     auto end = std::chrono::high_resolution_clock::now();
@@ -207,10 +238,9 @@ int main(int argc, char** argv) {
     else
         write_png(generateFilename(argv[1]).c_str(), dst_img, height, width, channels);
 
-    free(src_img);
-    free(intermediate_img);
-    free(dst_img);
+    hipFree(d_src_img);
+    hipFree(d_intermediate_img);
+    hipFree(d_dst_img);
 
     return 0;
 }
-
