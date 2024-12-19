@@ -8,7 +8,7 @@
 #include <sstream>  // For stringstream
 #include <chrono>   // For timing
 
-#define MASK_X 10   //mask size
+#define MASK_X 20   //mask size
 #define ITER_T 3    //iteration time
 #define MASK_Y MASK_X
 double** kernel;
@@ -158,9 +158,9 @@ void Gaussian(unsigned char* s, unsigned char* t, unsigned height, unsigned widt
                     else padded_y = y + v;
 
 
-                    R = s[channels * (width * (y + v) + (x + u)) + 2];
-                    G = s[channels * (width * (y + v) + (x + u)) + 1];
-                    B = s[channels * (width * (y + v) + (x + u)) + 0];
+                    R = s[channels * (width * (padded_y) + (padded_x)) + 2];
+                    G = s[channels * (width * (padded_y) + (padded_x)) + 1];
+                    B = s[channels * (width * (padded_y) + (padded_x)) + 0];
                     val[2] += R * kernel[u + xBound][v + yBound];
                     val[1] += G * kernel[u + xBound][v + yBound];
                     val[0] += B * kernel[u + xBound][v + yBound];
@@ -180,7 +180,7 @@ int main(int argc, char** argv) {
     unsigned char* src_img = NULL;
 
     read_png(argv[1], &src_img, &height, &width, &channels);
-    assert(channels == 3);
+    assert((channels == 3, "Only RGB png is acceptable"));
 
     unsigned char* intermediate_img =
         (unsigned char*)malloc(height * width * channels * sizeof(unsigned char));
