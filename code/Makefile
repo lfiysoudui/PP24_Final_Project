@@ -9,6 +9,9 @@ SEQ_TARGET := Gaussian_seq
 CUDA_TARGET := Gaussian_cuda
 HIP_TARGET := Gaussian_hip
 
+omp: Gaussian_omp.cpp
+	$(CXX) $(CXXFLAGS) $(LOCALFLAGS) $(LDFLAGS) -o $(SEQ_TARGET) Gaussian_omp.cpp
+
 seq: Gaussian_seq.cpp
 	$(CXX) $(CXXFLAGS) $(LOCALFLAGS) $(LDFLAGS) -o $(SEQ_TARGET) Gaussian_seq.cpp
 
