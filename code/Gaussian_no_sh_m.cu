@@ -151,8 +151,6 @@ void write_png(const char* filename, png_bytep image, const unsigned height, con
 }
 
 __global__ void Gaussian(unsigned char* d_s, unsigned char* d_tg, unsigned height, unsigned width, unsigned channels) {
-    __shared__ unsigned char sharedMem[BLK_SIZE + MASK_Y][BLK_SIZE + MASK_X][3];
-    
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
