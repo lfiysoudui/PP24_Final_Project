@@ -13,7 +13,7 @@
 #define BLK_SIZE 8
 // #define DEBUG
 double kernel[MASK_X][MASK_Y];
-__device__ __constant__ double d_kernel[MASK_X][MASK_Y];
+__device__ double d_kernel[MASK_X][MASK_Y];
 
 // Function to generate a filename based on image size (width and height)
 std::string generateFilename(char* inputname)
@@ -150,31 +150,50 @@ void write_png(const char* filename, png_bytep image, const unsigned height, con
 }
 
 __global__ void Gaussian(unsigned char* d_s, unsigned char* d_tg, unsigned height, unsigned width, unsigned channels) {
+    __shared__ unsigned char sharedMem[BLK_SIZE + MASK_Y][BLK_SIZE + MASK_X][3];
+    
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
     int xBound  = MASK_X / 2;
     int yBound  = MASK_Y / 2;
 
+    // Load pixels to shared memory
+    int x_start = (threadIdx.x == 0)? -xBound : 0;
+    int x_end   = (threadIdx.x == blockDim.x - 1)? xBound + ((MASK_X % 2) ? 1 : 0) : 1;
+    int y_start = (threadIdx.y == 0)? -yBound : 0;
+    int y_end   = (threadIdx.y == blockDim.y - 1)? yBound + ((MASK_Y % 2) ? 1 : 0) : 1;
+
     int padded_y, padded_x;
+    for(int v = y_start; v < y_end; ++v){
+        for(int u = x_start; u < x_end; ++u){
+            // padding x
+            if ((x + u) < 0) padded_x = -(x + u + 1);
+            else if ((x + u) >= width) padded_x = width - (x + u - width + 1);
+            else padded_x = x + u;
+            // padding y
+            if (y + v < 0) padded_y = -(y + v + 1);
+            else if (y + v >= height) padded_y = height - (y + v - height + 1);
+            else padded_y = y + v;
+
+            for (int c = 0; c < channels; c++) {
+                sharedMem[yBound + v + threadIdx.y][xBound + u + threadIdx.x][c]
+                    = d_s[channels * (width * padded_y + padded_x) + c];
+            }
+        }
+    }
+    __syncthreads();
 
     if(x < width && y < height) {
         double R, G, B;
         double val[3] = {0.0};
         #pragma unroll
-        for (int v = -yBound; v < ((MASK_Y % 2) ? 1 : 0); ++v) {
-            for (int u = -xBound; u < xBound + ((MASK_X % 2) ? 1 : 0); ++u) {
-                // padding y
-                if ((x + u) < 0) padded_x = -(x + u + 1);
-                else if ((x + u) >= width) padded_x = width - (x + u - width + 1);
-                else padded_x = x + u;
-                // padding y
-                if (y + v < 0) padded_y = -(y + v + 1);
-                else if (y + v >= height) padded_y = height - (y + v - height + 1);
-                else padded_y = y + v;
-                R = d_s[channels * (width * padded_y + padded_x) + 2];
-                G = d_s[channels * (width * padded_y + padded_x) + 1];
-                B = d_s[channels * (width * padded_y + padded_x) + 0];
+        for (int v = 0; v < MASK_Y; ++v) {
+            #pragma unroll
+            for (int u = 0; u < MASK_X; ++u) {
+                R = sharedMem[threadIdx.y + v][threadIdx.x + u][2];
+                G = sharedMem[threadIdx.y + v][threadIdx.x + u][1];
+                B = sharedMem[threadIdx.y + v][threadIdx.x + u][0];
                 val[2] += R * d_kernel[u][v];
                 val[1] += G * d_kernel[u][v];
                 val[0] += B * d_kernel[u][v];
@@ -221,7 +240,7 @@ int main(int argc, char** argv) {
     cudaMalloc((void**)&d_src_img, imgsize);
     cudaMemcpyAsync(d_src_img, src_img, imgsize, cudaMemcpyHostToDevice);
     set_filter(1.0);
-    cudaMemcpyToSymbol(d_kernel, &kernel, MASK_X * MASK_Y * sizeof(double));
+    cudaMemcpyAsync(d_kernel, kernel, MASK_X * MASK_Y * sizeof(double), cudaMemcpyHostToDevice);
     cudaMalloc((void**)&d_dst_img, imgsize);
     // Define block size
     dim3 blockSize = (BLK_SIZE,BLK_SIZE); // Set block size (experiment for optimal performance)
