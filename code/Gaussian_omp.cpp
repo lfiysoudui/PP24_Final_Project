@@ -11,6 +11,7 @@
 
 #define MASK_X 20   // mask size
 #define MASK_Y MASK_X
+#define THEARDS_NUM 8 * 8
 double** kernel;
 
 // Function to generate a filename based on image size (width and height)
@@ -128,12 +129,15 @@ void write_png(const char* filename, png_bytep image, const unsigned height, con
 }
 
 void Gaussian(unsigned char* s, unsigned char* t, unsigned height, unsigned width, unsigned channels) {
+
     int x, y, v, u, padded_y, padded_x;
     double R, G, B;
     double val[3] = {0.0};
     int adjustX, adjustY, xBound, yBound;
 
-    #pragma omp parallel for private(x, y, v, u, padded_y, padded_x, R, G, B, val, adjustX, adjustY, xBound, yBound) schedule(dynamic)
+    omp_set_num_threads(48);  // 使用所有核心
+
+    #pragma omp parallel for private(x, y, v, u, padded_y, padded_x, R, G, B, val, adjustX, adjustY, xBound, yBound) num_threads(THEARDS_NUM) schedule(static)
     for (y = 0; y < height; ++y) {
         for (x = 0; x < width; ++x) {
             adjustX = (MASK_X % 2) ? 1 : 0;
@@ -174,6 +178,8 @@ int main(int argc, char** argv) {
 
     assert((argc < 2, "[Usage] ./Gaussian input.png [optional output.png]"));
 
+    omp_set_num_threads(THEARDS_NUM);
+
     unsigned height, width, channels;
     unsigned char* src_img = NULL;
 
@@ -198,7 +204,9 @@ int main(int argc, char** argv) {
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     int seconds = duration.count() / 1000;
     int milliseconds = duration.count() % 1000;
-    std::cout << "Execution time: " << seconds << " s " << milliseconds << " ms" << std::endl;
+
+
+    std::cout << "Thread's Num: " << THEARDS_NUM  << " Execution time: " << seconds << " s " << milliseconds << " ms" << std::endl;
 
     if (argc == 3)
         write_png(argv[2], dst_img, height, width, channels);
