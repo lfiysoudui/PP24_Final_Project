@@ -1,0 +1,32 @@
+File Name      : ../testcases/input_3.png
+Channel        : 3
+BLK_SIZE       : 16
+total runtime  : Execution time: 0 s 645 ms
+Copy to GPU    : Execution time: 0 s 288 ms
+Kernel runtime : Execution time: 319658 ns
+Copy to CPU    : Execution time: 0 s 357 ms
+
+File Name      : ../testcases/input_3.png
+Channel        : 3
+BLK_SIZE       : 32
+total runtime  : Execution time: 0 s 599 ms
+Copy to GPU    : Execution time: 0 s 289 ms
+Kernel runtime : Execution time: 341616 ns
+Copy to CPU    : Execution time: 0 s 309 ms
+
+File Name      : ../testcases/input_3.png
+Channel        : 3
+BLK_SIZE       : 48
+total runtime  : Execution time: 0 s 694 ms
+Copy to GPU    : Execution time: 0 s 306 ms
+Kernel runtime : Execution time: 298615 ns
+Copy to CPU    : Execution time: 0 s 388 ms
+
+File Name      : ../testcases/input_3.png
+Channel        : 3
+BLK_SIZE       : 64
+total runtime  : Execution time: 0 s 677 ms
+Copy to GPU    : Execution time: 0 s 289 ms
+Kernel runtime : Execution time: 321622 ns
+Copy to CPU    : Execution time: 0 s 387 ms
+
