@@ -206,6 +206,11 @@ __global__ void Gaussian(unsigned char* d_s, unsigned char* d_tg, unsigned heigh
     }
 }
 
+void print_time_n(std::chrono::nanoseconds time) {
+    int seconds = time.count() / 1000;
+    int milliseconds = time.count() % 1000;
+    std::cout << "Execution time: " << time.count() << " ns" << std::endl;
+}
 void print_time(std::chrono::milliseconds time) {
     int seconds = time.count() / 1000;
     int milliseconds = time.count() % 1000;
@@ -260,7 +265,7 @@ int main(int argc, char** argv) {
     std::cout << "Copy to GPU    : ";
     print_time(std::chrono::duration_cast<std::chrono::milliseconds>(slice_1 - start));
     std::cout << "Kernel runtime : ";
-    print_time(std::chrono::duration_cast<std::chrono::milliseconds>(slice_2 - slice_1));
+    print_time_n(std::chrono::duration_cast<std::chrono::nanoseconds>(slice_2 - slice_1));
     std::cout << "Copy to CPU    : ";
     print_time(std::chrono::duration_cast<std::chrono::milliseconds>(end - slice_2));
     std::cout << std::endl;
