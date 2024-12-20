@@ -22,7 +22,6 @@ cuda: Gaussian.cu
 hip: Gaussian_hip.cpp
 	hipcc $(HIPFLAGS) $(AMD_SERVER_FLAGS) $(LDFLAGS) -o $(HIP_TARGET) Gaussian_hip.cpp
 
-
 clean:
 	rm -f $(SEQ_TARGET) $(CUDA_TARGET) $(HIP_TARGET)
 
