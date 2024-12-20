@@ -11,7 +11,7 @@
 
 #define MASK_X 20   //mask size
 #define MASK_Y MASK_X
-#define BLK_SIZE 64
+#define BLK_SIZE 8
 // #define DEBUG
 double kernel[MASK_X][MASK_Y];
 __device__ __constant__ double d_kernel[MASK_X][MASK_Y];
@@ -62,69 +62,89 @@ void set_filter(double sigma)
 
 
 int read_png(const char* filename, unsigned char** image, unsigned* height, unsigned* width, unsigned* channels, unsigned* imgsize) {
+    FILE* infile = fopen(filename, "rb");
+    if (!infile) return 1;
+
     unsigned char sig[8];
-    FILE* infile;
-    infile = fopen(filename, "rb");
-
     fread(sig, 1, 8, infile);
-    if (!png_check_sig(sig, 8)) return 1; /* bad signature */
+    if (!png_check_sig(sig, 8)) {
+        fclose(infile);
+        return 1;
+    }
 
-    png_structp png_ptr;
-    png_infop info_ptr;
+    png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr) {
+        fclose(infile);
+        return 4;
+    }
 
-    png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    if (!png_ptr) return 4; /* out of memory */
-
-    info_ptr = png_create_info_struct(png_ptr);
+    png_infop info_ptr = png_create_info_struct(png_ptr);
     if (!info_ptr) {
         png_destroy_read_struct(&png_ptr, NULL, NULL);
-        return 4; /* out of memory */
+        fclose(infile);
+        return 4;
     }
 
-    png_init_io(png_ptr, infile);
     png_set_sig_bytes(png_ptr, 8);
+    png_init_io(png_ptr, infile);
+
     png_read_info(png_ptr, info_ptr);
-    int bit_depth, color_type;
-    png_get_IHDR(png_ptr, info_ptr, width, height, &bit_depth, &color_type, NULL, NULL, NULL);
+    *width = png_get_image_width(png_ptr, info_ptr);
+    *height = png_get_image_height(png_ptr, info_ptr);
+    *channels = png_get_channels(png_ptr, info_ptr);
+    int bit_depth = png_get_bit_depth(png_ptr, info_ptr);
 
-    png_uint_32 i, rowbytes;
-    png_bytep row_pointers[*height];
+    if (bit_depth == 16) png_set_strip_16(png_ptr);
+    if (*channels < 3) png_set_expand_gray_1_2_4_to_8(png_ptr);
+
+    png_set_palette_to_rgb(png_ptr);
     png_read_update_info(png_ptr, info_ptr);
-    rowbytes = png_get_rowbytes(png_ptr, info_ptr);
-    *channels = (int)png_get_channels(png_ptr, info_ptr);
-    *imgsize = rowbytes * *height;
-    if ((*image = (unsigned char*)malloc(rowbytes * *height)) == NULL) {
-        png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
-        return 3;
-    }
 
-    for (i = 0; i < *height; ++i) {
+    png_uint_32 rowbytes = png_get_rowbytes(png_ptr, info_ptr);
+    *imgsize = rowbytes * *height;
+
+    *image = (unsigned char*)malloc(*imgsize);
+    png_bytep row_pointers[*height];
+    for (unsigned int i = 0; i < *height; ++i) {
         row_pointers[i] = *image + i * rowbytes;
     }
 
     png_read_image(png_ptr, row_pointers);
-    png_read_end(png_ptr, NULL);
     png_destroy_read_struct(&png_ptr, &info_ptr, NULL);
+    fclose(infile);
     return 0;
 }
 
-void write_png(const char* filename, png_bytep image, const unsigned height, const unsigned width,
-    const unsigned channels) {
-    FILE* fp = fopen(filename, "wb");
-    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-    png_infop info_ptr = png_create_info_struct(png_ptr);
-    png_init_io(png_ptr, fp);
-    png_set_IHDR(png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
-        PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-    png_set_filter(png_ptr, 0, PNG_NO_FILTERS);
-    png_write_info(png_ptr, info_ptr);
-    png_set_compression_level(png_ptr, 0);
 
-    png_bytep row_ptr[height];
-    for (int i = 0; i < height; ++i) {
-        row_ptr[i] = image + i * width * channels * sizeof(unsigned char);
+void write_png(const char* filename, png_bytep image, const unsigned height, const unsigned width, const unsigned channels) {
+    FILE* fp = fopen(filename, "wb");
+    if (!fp) return;
+
+    png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr) {
+        fclose(fp);
+        return;
     }
-    png_write_image(png_ptr, row_ptr);
+
+    png_infop info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr) {
+        png_destroy_write_struct(&png_ptr, NULL);
+        fclose(fp);
+        return;
+    }
+
+    png_init_io(png_ptr, fp);
+    png_set_IHDR(png_ptr, info_ptr, width, height, 8, PNG_COLOR_TYPE_RGB,
+                 PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+
+    png_bytep row_pointers[height];
+    for (unsigned int i = 0; i < height; ++i) {
+        row_pointers[i] = image + i * width * channels;
+    }
+
+    png_write_info(png_ptr, info_ptr);
+    png_set_compression_level(png_ptr, 0); // Low compression for speed
+    png_write_image(png_ptr, row_pointers);
     png_write_end(png_ptr, NULL);
     png_destroy_write_struct(&png_ptr, &info_ptr);
     fclose(fp);
@@ -186,6 +206,12 @@ __global__ void Gaussian(unsigned char* d_s, unsigned char* d_tg, unsigned heigh
     }
 }
 
+void print_time(std::chrono::milliseconds time) {
+    int seconds = time.count() / 1000;
+    int milliseconds = time.count() % 1000;
+    std::cout << "Execution time: " << seconds << " s " << milliseconds << " ms" << std::endl;
+}
+
 int main(int argc, char** argv) {
     if(!(argc > 1 && argc < 4)){
         std::cerr << "[Usage] ./Gaussian input.png [optional output.png]" << std::endl;
@@ -194,45 +220,50 @@ int main(int argc, char** argv) {
     
 
     unsigned height, width, channels, imgsize;
-    unsigned char* src_img,  *d_src_img, *d_intermediate_img, *d_dst_img;;
+    unsigned char* src_img,  *d_src_img, *d_dst_img;;
 
     read_png(argv[1], &src_img, &height, &width, &channels, &imgsize);
-    std::cout << "channel : " << channels << std::endl;
+    std::cout << "File Name      : " << argv[1] << std::endl;
+    std::cout << "Channel        : " << channels << std::endl;
     if(channels != 3){
         std::cerr << "[Usage] please use convert.py to make it 3-channel" << std::endl;
         return 1;
     }
-    hipMalloc((void**)&d_src_img, imgsize);
-    hipMemcpy(d_src_img, src_img, imgsize, hipMemcpyHostToDevice);
 
     // Start the timer
     auto start = std::chrono::high_resolution_clock::now();
     // Generate the filter in gpu
+    hipMalloc((void**)&d_src_img, imgsize);
+    hipMemcpyAsync(d_src_img, src_img, imgsize, hipMemcpyHostToDevice);
     set_filter(1.0);
     hipMemcpyToSymbol(d_kernel, &kernel, MASK_X * MASK_Y * sizeof(double));
-
-    hipMalloc((void**)&d_intermediate_img, imgsize);
     hipMalloc((void**)&d_dst_img, imgsize);
-
     // Define block size
     dim3 blockSize = (BLK_SIZE,BLK_SIZE); // Set block size (experiment for optimal performance)
     dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
                 (height + blockSize.y - 1) / blockSize.y);
 
+    auto slice_1 = std::chrono::high_resolution_clock::now();
     // Apply Gaussian filter two times
-    hipLaunchKernelGGL(Gaussian, gridSize, blockSize, 0, 0, d_src_img, d_intermediate_img, height, width, channels);
-    hipLaunchKernelGGL(Gaussian, gridSize, blockSize, 0, 0, d_intermediate_img, d_dst_img, height, width, channels);
-
+    hipLaunchKernelGGL(Gaussian, gridSize, blockSize, 0, 0, d_src_img, d_dst_img, height, width, channels);
+    hipLaunchKernelGGL(Gaussian, gridSize, blockSize, 0, 0, d_dst_img, d_src_img, height, width, channels);
+    auto slice_2 = std::chrono::high_resolution_clock::now();
     //copy back the result image
     unsigned char *dst_img = (unsigned char *)malloc(imgsize);
-    hipMemcpy(dst_img, d_dst_img, imgsize, hipMemcpyDeviceToHost);
+    hipMemcpyAsync(dst_img, d_src_img, imgsize, hipMemcpyDeviceToHost);
 
     // End the timer
     auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    int seconds = duration.count() / 1000;
-    int milliseconds = duration.count() % 1000;
-    std::cout << "Execution time: " << seconds << " s " << milliseconds << " ms" << std::endl;
+    std::cout << "BLK_SIZE       : " << BLK_SIZE << std::endl;
+    std::cout << "total runtime  : ";
+    print_time(std::chrono::duration_cast<std::chrono::milliseconds>(end - start));
+    std::cout << "Copy to GPU    : ";
+    print_time(std::chrono::duration_cast<std::chrono::milliseconds>(slice_1 - start));
+    std::cout << "Kernel runtime : ";
+    print_time(std::chrono::duration_cast<std::chrono::milliseconds>(slice_2 - slice_1));
+    std::cout << "Copy to CPU    : ";
+    print_time(std::chrono::duration_cast<std::chrono::milliseconds>(end - slice_2));
+    std::cout << std::endl;
 
     if (argc == 3)
         write_png(argv[2], dst_img, height, width, channels);
@@ -240,7 +271,6 @@ int main(int argc, char** argv) {
         write_png(generateFilename(argv[1]).c_str(), dst_img, height, width, channels);
 
     hipFree(d_src_img);
-    hipFree(d_intermediate_img);
     hipFree(d_dst_img);
 
     return 0;
